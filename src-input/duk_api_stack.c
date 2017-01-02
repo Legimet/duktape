@@ -76,7 +76,7 @@ DUK_LOCAL const duk_uint_t duk__type_mask_from_tag[] = {
 
 DUK_LOCAL_DECL duk_heaphdr *duk__get_tagged_heaphdr_raw(duk_context *ctx, duk_idx_t idx, duk_uint_t tag);
 
-DUK_LOCAL duk_int_t duk__api_coerce_d2i(duk_context *ctx, duk_idx_t idx, duk_bool_t require) {
+DUK_LOCAL duk_int_t duk__api_coerce_d2i(duk_context *ctx, duk_idx_t idx, duk_int_t def_value, duk_bool_t require) {
 	duk_hthread *thr;
 	duk_tval *tv;
 	duk_small_int_t c;
@@ -136,10 +136,11 @@ DUK_LOCAL duk_int_t duk__api_coerce_d2i(duk_context *ctx, duk_idx_t idx, duk_boo
 		DUK_ERROR_REQUIRE_TYPE_INDEX(thr, idx, "number", DUK_STR_NOT_NUMBER);
 		/* not reachable */
 	}
-	return 0;
+
+	return def_value;
 }
 
-DUK_LOCAL duk_uint_t duk__api_coerce_d2ui(duk_context *ctx, duk_idx_t idx, duk_bool_t require) {
+DUK_LOCAL duk_uint_t duk__api_coerce_d2ui(duk_context *ctx, duk_idx_t idx, duk_uint_t def_value, duk_bool_t require) {
 	duk_hthread *thr;
 	duk_tval *tv;
 	duk_small_int_t c;
@@ -189,7 +190,8 @@ DUK_LOCAL duk_uint_t duk__api_coerce_d2ui(duk_context *ctx, duk_idx_t idx, duk_b
 		DUK_ERROR_REQUIRE_TYPE_INDEX(thr, idx, "number", DUK_STR_NOT_NUMBER);
 		/* not reachable */
 	}
-	return 0;
+
+	return def_value;
 }
 
 /*
@@ -1182,7 +1184,7 @@ DUK_EXTERNAL void duk_xcopymove_raw(duk_context *to_ctx, duk_context *from_ctx, 
 }
 
 /*
- *  Get/require
+ *  Get/opt/require
  */
 
 DUK_EXTERNAL void duk_require_undefined(duk_context *ctx, duk_idx_t idx) {
@@ -1211,8 +1213,8 @@ DUK_EXTERNAL void duk_require_null(duk_context *ctx, duk_idx_t idx) {
 	}
 }
 
-DUK_EXTERNAL duk_bool_t duk_get_boolean(duk_context *ctx, duk_idx_t idx) {
-	duk_bool_t ret = 0;  /* default: false */
+DUK_LOCAL DUK_ALWAYS_INLINE duk_bool_t duk__getopt_boolean(duk_context *ctx, duk_idx_t idx, duk_bool_t def_value) {
+	duk_bool_t ret;
 	duk_tval *tv;
 
 	DUK_ASSERT_CTX_VALID(ctx);
@@ -1221,11 +1223,28 @@ DUK_EXTERNAL duk_bool_t duk_get_boolean(duk_context *ctx, duk_idx_t idx) {
 	DUK_ASSERT(tv != NULL);
 	if (DUK_TVAL_IS_BOOLEAN(tv)) {
 		ret = DUK_TVAL_GET_BOOLEAN(tv);
+		DUK_ASSERT(ret == 0 || ret == 1);
+	} else {
+		ret = def_value;
+		/* Not guaranteed to be 0 or 1. */
 	}
 
-	DUK_ASSERT(ret == 0 || ret == 1);
 	return ret;
 }
+
+DUK_EXTERNAL duk_bool_t duk_get_boolean(duk_context *ctx, duk_idx_t idx) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return duk__getopt_boolean(ctx, idx, 0);  /* default: false */
+}
+
+#if 0
+DUK_EXTERNAL duk_bool_t duk_XXX_boolean(duk_context *ctx, duk_idx_t idx, duk_bool_t def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return duk__getopt_boolean(ctx, idx, def_value);
+}
+#endif
 
 DUK_EXTERNAL duk_bool_t duk_require_boolean(duk_context *ctx, duk_idx_t idx) {
 	duk_hthread *thr = (duk_hthread *) ctx;
@@ -1236,25 +1255,46 @@ DUK_EXTERNAL duk_bool_t duk_require_boolean(duk_context *ctx, duk_idx_t idx) {
 
 	tv = duk_get_tval_or_unused(ctx, idx);
 	DUK_ASSERT(tv != NULL);
-	if (DUK_UNLIKELY(!DUK_TVAL_IS_BOOLEAN(tv))) {
+	if (DUK_LIKELY(DUK_TVAL_IS_BOOLEAN(tv))) {
+		ret = DUK_TVAL_GET_BOOLEAN(tv);
+		DUK_ASSERT(ret == 0 || ret == 1);
+		return ret;
+	} else {
 		DUK_ERROR_REQUIRE_TYPE_INDEX(thr, idx, "boolean", DUK_STR_NOT_BOOLEAN);
 	}
-	ret = DUK_TVAL_GET_BOOLEAN(tv);
-	DUK_ASSERT(ret == 0 || ret == 1);
-	return ret;
 }
 
-DUK_EXTERNAL duk_double_t duk_get_number(duk_context *ctx, duk_idx_t idx) {
+DUK_EXTERNAL duk_bool_t duk_opt_boolean(duk_context *ctx, duk_idx_t idx, duk_bool_t def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_value;
+	}
+	return duk_require_boolean(ctx, idx);
+}
+
+DUK_LOCAL DUK_ALWAYS_INLINE duk_double_t duk__getopt_number(duk_context *ctx, duk_idx_t idx, duk_double_t def_value) {
 	duk_double_union ret;
 	duk_tval *tv;
 
 	DUK_ASSERT_CTX_VALID(ctx);
 
-	ret.d = DUK_DOUBLE_NAN;  /* default: NaN */
 	tv = duk_get_tval_or_unused(ctx, idx);
 	DUK_ASSERT(tv != NULL);
-	if (DUK_TVAL_IS_NUMBER(tv)) {
-		ret.d = DUK_TVAL_GET_NUMBER(tv);
+#if defined(DUK_USE_FASTINT)
+	if (DUK_TVAL_IS_FASTINT(tv)) {
+		ret.d = (duk_double_t) DUK_TVAL_GET_FASTINT(tv);  /* XXX: cast trick */
+	}
+	else
+#endif
+	if (DUK_TVAL_IS_DOUBLE(tv)) {
+		ret.d = DUK_TVAL_GET_DOUBLE(tv);
+	} else {
+		ret.d = def_value;
+#if 0
+		/* Would be necessary for user defaults. */
+		DUK_DBLUNION_NORMALIZE_NAN_CHECK(&ret);
+#endif
 	}
 
 	/* When using packed duk_tval, number must be in NaN-normalized form
@@ -1264,6 +1304,16 @@ DUK_EXTERNAL duk_double_t duk_get_number(duk_context *ctx, duk_idx_t idx) {
 	DUK_ASSERT(DUK_DBLUNION_IS_NORMALIZED(&ret));
 	return ret.d;
 }
+
+DUK_EXTERNAL duk_double_t duk_get_number(duk_context *ctx, duk_idx_t idx) {
+	return duk__getopt_number(ctx, idx, DUK_DOUBLE_NAN);  /* default: NaN */
+}
+
+#if 0
+DUK_EXTERNAL duk_double_t duk_XXX_number(duk_context *ctx, duk_idx_t idx, duk_double_t def_value) {
+	return duk__getopt_number(ctx, idx, def_value);
+}
+#endif
 
 DUK_EXTERNAL duk_double_t duk_require_number(duk_context *ctx, duk_idx_t idx) {
 	duk_hthread *thr = (duk_hthread *) ctx;
@@ -1288,56 +1338,91 @@ DUK_EXTERNAL duk_double_t duk_require_number(duk_context *ctx, duk_idx_t idx) {
 	return ret.d;
 }
 
-DUK_EXTERNAL duk_int_t duk_get_int(duk_context *ctx, duk_idx_t idx) {
-	/* Custom coercion for API */
+DUK_EXTERNAL duk_double_t duk_opt_number(duk_context *ctx, duk_idx_t idx, duk_double_t def_value) {
 	DUK_ASSERT_CTX_VALID(ctx);
-	return (duk_int_t) duk__api_coerce_d2i(ctx, idx, 0 /*require*/);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		/* User provided default is not NaN normalized. */
+		return def_value;
+	}
+	return duk_require_number(ctx, idx);
+}
+
+DUK_EXTERNAL duk_int_t duk_get_int(duk_context *ctx, duk_idx_t idx) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return (duk_int_t) duk__api_coerce_d2i(ctx, idx, 0 /*def_value*/, 0 /*require*/);
 }
 
 DUK_EXTERNAL duk_uint_t duk_get_uint(duk_context *ctx, duk_idx_t idx) {
-	/* Custom coercion for API */
 	DUK_ASSERT_CTX_VALID(ctx);
-	return (duk_uint_t) duk__api_coerce_d2ui(ctx, idx, 0 /*require*/);
+
+	return (duk_uint_t) duk__api_coerce_d2ui(ctx, idx, 0 /*def_value*/, 0 /*require*/);
 }
 
-DUK_EXTERNAL duk_int_t duk_require_int(duk_context *ctx, duk_idx_t idx) {
-	/* Custom coercion for API */
+#if 0
+DUK_EXTERNAL duk_int_t duk_XXX_int(duk_context *ctx, duk_idx_t idx, duk_int_t def_value) {
 	DUK_ASSERT_CTX_VALID(ctx);
-	return (duk_int_t) duk__api_coerce_d2i(ctx, idx, 1 /*require*/);
+
+	return (duk_int_t) duk__api_coerce_d2i(ctx, idx, def_value, 0 /*require*/);
+}
+
+DUK_EXTERNAL duk_uint_t duk_XXX_uint(duk_context *ctx, duk_idx_t idx, duk_uint_t def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return (duk_uint_t) duk__api_coerce_d2ui(ctx, idx, def_value, 0 /*require*/);
+}
+#endif
+
+DUK_EXTERNAL duk_int_t duk_require_int(duk_context *ctx, duk_idx_t idx) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return (duk_int_t) duk__api_coerce_d2i(ctx, idx, 0 /*def_value*/, 1 /*require*/);
 }
 
 DUK_EXTERNAL duk_uint_t duk_require_uint(duk_context *ctx, duk_idx_t idx) {
-	/* Custom coercion for API */
 	DUK_ASSERT_CTX_VALID(ctx);
-	return (duk_uint_t) duk__api_coerce_d2ui(ctx, idx, 1 /*require*/);
+
+	return (duk_uint_t) duk__api_coerce_d2ui(ctx, idx, 0 /*def_value*/, 1 /*require*/);
+}
+
+DUK_EXTERNAL duk_int_t duk_opt_int(duk_context *ctx, duk_idx_t idx, duk_int_t def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_value;
+	}
+	return duk_require_int(ctx, idx);
+}
+
+DUK_EXTERNAL duk_uint_t duk_opt_uint(duk_context *ctx, duk_idx_t idx, duk_uint_t def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_value;
+	}
+	return duk_require_uint(ctx, idx);
 }
 
 DUK_EXTERNAL const char *duk_get_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len) {
+	duk_hstring *h;
 	const char *ret;
-	duk_tval *tv;
+	duk_size_t len;
 
 	DUK_ASSERT_CTX_VALID(ctx);
 
-	/* default: NULL, length 0 */
-	ret = NULL;
-	if (out_len) {
-		*out_len = 0;
-	}
-
-	tv = duk_get_tval_or_unused(ctx, idx);
-	DUK_ASSERT(tv != NULL);
-	if (DUK_TVAL_IS_STRING(tv)) {
-		/* Here we rely on duk_hstring instances always being zero
-		 * terminated even if the actual string is not.
-		 */
-		duk_hstring *h = DUK_TVAL_GET_STRING(tv);
-		DUK_ASSERT(h != NULL);
+	h = duk_get_hstring(ctx, idx);
+	if (h != NULL) {
+		len = DUK_HSTRING_GET_BYTELEN(h);
 		ret = (const char *) DUK_HSTRING_GET_DATA(h);
-		if (out_len) {
-			*out_len = DUK_HSTRING_GET_BYTELEN(h);
-		}
+	} else {
+		len = 0;
+		ret = NULL;
 	}
 
+	if (out_len != NULL) {
+		*out_len = len;
+	}
 	return ret;
 }
 
@@ -1368,9 +1453,74 @@ DUK_INTERNAL const char *duk_require_lstring_notsymbol(duk_context *ctx, duk_idx
 }
 
 DUK_EXTERNAL const char *duk_get_string(duk_context *ctx, duk_idx_t idx) {
+	duk_hstring *h;
+
 	DUK_ASSERT_CTX_VALID(ctx);
 
-	return duk_get_lstring(ctx, idx, NULL);
+	h = duk_get_hstring(ctx, idx);
+	if (h != NULL) {
+		return (const char *) DUK_HSTRING_GET_DATA(h);
+	} else {
+		return NULL;
+	}
+}
+
+#if 0
+DUK_EXTERNAL const char *duk_XXX_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len, const char *def_ptr, duk_size_t def_len) {
+	duk_hstring *h;
+	const char *ret;
+	duk_size_t len;
+
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	h = duk_get_hstring(ctx, idx);
+	if (h != NULL) {
+		len = DUK_HSTRING_GET_BYTELEN(h);
+		ret = (const char *) DUK_HSTRING_GET_DATA(h);
+	} else {
+		len = def_len;
+		ret = def_ptr;
+	}
+
+	if (out_len != NULL) {
+		*out_len = len;
+	}
+	return ret;
+}
+
+DUK_EXTERNAL const char *duk_XXX_string(duk_context *ctx, duk_idx_t idx, const char *def_ptr) {
+	duk_hstring *h;
+
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	h = duk_get_hstring(ctx, idx);
+	if (h != NULL) {
+		return (const char *) DUK_HSTRING_GET_DATA(h);
+	} else {
+		return def_ptr;  /* XXX: shared helper */
+	}
+}
+#endif
+
+DUK_EXTERNAL const char *duk_opt_lstring(duk_context *ctx, duk_idx_t idx, duk_size_t *out_len, const char *def_ptr, duk_size_t def_len) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		if (out_len != NULL) {
+			*out_len = def_len;
+		}
+		return def_ptr;
+	}
+	return duk_require_lstring(ctx, idx, out_len);
+}
+
+DUK_EXTERNAL const char *duk_opt_string(duk_context *ctx, duk_idx_t idx, const char *def_ptr) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_ptr;
+	}
+	return duk_require_string(ctx, idx);
 }
 
 DUK_INTERNAL const char *duk_get_string_notsymbol(duk_context *ctx, duk_idx_t idx) {
@@ -1402,7 +1552,7 @@ DUK_INTERNAL const char *duk_require_string_notsymbol(duk_context *ctx, duk_idx_
 	return (const char *) DUK_HSTRING_GET_DATA(h);
 }
 
-DUK_EXTERNAL void *duk_get_pointer(duk_context *ctx, duk_idx_t idx) {
+DUK_LOCAL void *duk__getopt_pointer(duk_context *ctx, duk_idx_t idx, void *def_value) {
 	duk_tval *tv;
 	void *p;
 
@@ -1411,11 +1561,30 @@ DUK_EXTERNAL void *duk_get_pointer(duk_context *ctx, duk_idx_t idx) {
 	tv = duk_get_tval_or_unused(ctx, idx);
 	DUK_ASSERT(tv != NULL);
 	if (!DUK_TVAL_IS_POINTER(tv)) {
-		return NULL;
+		return def_value;
 	}
 
 	p = DUK_TVAL_GET_POINTER(tv);  /* may be NULL */
 	return p;
+}
+
+DUK_EXTERNAL void *duk_get_pointer(duk_context *ctx, duk_idx_t idx) {
+	return duk__getopt_pointer(ctx, idx, NULL /*def_value*/);
+}
+
+#if 0
+DUK_EXTERNAL void *duk_XXX_pointer(duk_context *ctx, duk_idx_t idx, void *def_value) {
+	return duk__getopt_pointer(ctx, idx, def_value);
+}
+#endif
+
+DUK_EXTERNAL void *duk_opt_pointer(duk_context *ctx, duk_idx_t idx, void *def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_value;
+	}
+	return duk_require_pointer(ctx, idx);
 }
 
 DUK_EXTERNAL void *duk_require_pointer(duk_context *ctx, duk_idx_t idx) {
@@ -1456,10 +1625,12 @@ DUK_INTERNAL void *duk_get_voidptr(duk_context *ctx, duk_idx_t idx) {
 }
 #endif
 
-DUK_LOCAL void *duk__get_buffer_helper(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, duk_bool_t throw_flag) {
+DUK_LOCAL void *duk__get_buffer_helper(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, void *def_ptr, duk_size_t def_size, duk_bool_t throw_flag) {
 	duk_hthread *thr = (duk_hthread *) ctx;
-	duk_tval *tv;
 	duk_hbuffer *h;
+	void *ret;
+	duk_size_t len;
+	duk_tval *tv;
 
 	DUK_ASSERT_CTX_VALID(ctx);
 	DUK_UNREF(thr);
@@ -1470,27 +1641,56 @@ DUK_LOCAL void *duk__get_buffer_helper(duk_context *ctx, duk_idx_t idx, duk_size
 
 	tv = duk_get_tval_or_unused(ctx, idx);
 	DUK_ASSERT(tv != NULL);
-	if (DUK_UNLIKELY(!DUK_TVAL_IS_BUFFER(tv))) {
+	if (DUK_LIKELY(DUK_TVAL_IS_BUFFER(tv))) {
+		h = DUK_TVAL_GET_BUFFER(tv);
+		DUK_ASSERT(h != NULL);
+
+		len = DUK_HBUFFER_GET_SIZE(h);
+		ret = DUK_HBUFFER_GET_DATA_PTR(thr->heap, h);
+	} else {
 		if (throw_flag) {
 			DUK_ERROR_REQUIRE_TYPE_INDEX(thr, idx, "buffer", DUK_STR_NOT_BUFFER);
 		}
-		return NULL;
+		len = def_size;
+		ret = def_ptr;
 	}
 
-	h = DUK_TVAL_GET_BUFFER(tv);
-	DUK_ASSERT(h != NULL);
-	if (out_size) {
-		*out_size = DUK_HBUFFER_GET_SIZE(h);
+	if (out_size != NULL) {
+		*out_size = len;
 	}
-	return (void *) DUK_HBUFFER_GET_DATA_PTR(thr->heap, h);  /* may be NULL (but only if size is 0) */
+	return ret;
 }
 
 DUK_EXTERNAL void *duk_get_buffer(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size) {
-	return duk__get_buffer_helper(ctx, idx, out_size, 0 /*throw_flag*/);
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return duk__get_buffer_helper(ctx, idx, out_size, NULL /*def_ptr*/, 0 /*def_size*/, 0 /*throw_flag*/);
+}
+
+#if 0
+DUK_EXTERNAL void *duk_XXX_buffer(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, void *def_ptr, duk_size_t def_size) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return duk__get_buffer_helper(ctx, idx, out_size, def_ptr, def_size, 0 /*throw_flag*/);
+}
+#endif
+
+DUK_EXTERNAL void *duk_opt_buffer(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, void *def_ptr, duk_size_t def_size) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		if (out_size != NULL) {
+			*out_size = def_size;
+		}
+		return def_ptr;
+	}
+	return duk_require_buffer(ctx, idx, out_size);
 }
 
 DUK_EXTERNAL void *duk_require_buffer(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size) {
-	return duk__get_buffer_helper(ctx, idx, out_size, 1 /*throw_flag*/);
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	return duk__get_buffer_helper(ctx, idx, out_size, NULL /*def_ptr*/, 0 /*def_size*/, 1 /*throw_flag*/);
 }
 
 /* Get the active buffer data area for a plain buffer or a buffer object.
@@ -1498,7 +1698,7 @@ DUK_EXTERNAL void *duk_require_buffer(duk_context *ctx, duk_idx_t idx, duk_size_
  * have a NULL data pointer when its size is zero, the optional 'out_isbuffer'
  * argument allows caller to detect this reliably.
  */
-DUK_INTERNAL void *duk_get_buffer_data_raw(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, duk_bool_t throw_flag, duk_bool_t *out_isbuffer) {
+DUK_INTERNAL void *duk_get_buffer_data_raw(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, void *def_ptr, duk_size_t def_size, duk_bool_t throw_flag, duk_bool_t *out_isbuffer) {
 	duk_hthread *thr = (duk_hthread *) ctx;
 	duk_tval *tv;
 
@@ -1509,7 +1709,7 @@ DUK_INTERNAL void *duk_get_buffer_data_raw(duk_context *ctx, duk_idx_t idx, duk_
 		*out_isbuffer = 0;
 	}
 	if (out_size != NULL) {
-		*out_size = 0;
+		*out_size = def_size;
 	}
 
 	tv = duk_get_tval_or_unused(ctx, idx);
@@ -1558,15 +1758,33 @@ DUK_INTERNAL void *duk_get_buffer_data_raw(duk_context *ctx, duk_idx_t idx, duk_
 	if (throw_flag) {
 		DUK_ERROR_REQUIRE_TYPE_INDEX(thr, idx, "buffer", DUK_STR_NOT_BUFFER);
 	}
-	return NULL;
+	return def_ptr;
 }
 
 DUK_EXTERNAL void *duk_get_buffer_data(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size) {
-	return duk_get_buffer_data_raw(ctx, idx, out_size, 0 /*throw_flag*/, NULL);
+	return duk_get_buffer_data_raw(ctx, idx, out_size, NULL /*def_ptr*/, 0 /*def_size*/, 0 /*throw_flag*/, NULL);
+}
+
+#if 0
+DUK_EXTERNAL void *duk_XXX_buffer_data(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, void *def_ptr, duk_size_t def_size) {
+	return duk_get_buffer_data_raw(ctx, idx, out_size, def_ptr, def_size, 0 /*throw_flag*/, NULL);
+}
+#endif
+
+DUK_EXTERNAL void *duk_opt_buffer_data(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size, void *def_ptr, duk_size_t def_size) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		if (out_size != NULL) {
+			*out_size = def_size;
+		}
+		return def_ptr;
+	}
+	return duk_require_buffer_data(ctx, idx, out_size);
 }
 
 DUK_EXTERNAL void *duk_require_buffer_data(duk_context *ctx, duk_idx_t idx, duk_size_t *out_size) {
-	return duk_get_buffer_data_raw(ctx, idx, out_size, 1 /*throw_flag*/, NULL);
+	return duk_get_buffer_data_raw(ctx, idx, out_size, NULL /*def_ptr*/, 0 /*def_size*/, 1 /*throw_flag*/, NULL);
 }
 
 /* Raw helper for getting a value from the stack, checking its tag.
@@ -1723,6 +1941,30 @@ DUK_EXTERNAL duk_c_function duk_get_c_function(duk_context *ctx, duk_idx_t idx) 
 	return f->func;
 }
 
+#if 0
+DUK_EXTERNAL duk_c_function duk_XXX_c_function(duk_context *ctx, duk_idx_t idx, duk_c_function def_value) {
+	duk_c_function ret;
+
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	ret = duk_get_c_function(ctx, idx);
+	if (ret != NULL) {
+		return ret;
+	}
+
+	return def_value;
+}
+#endif
+
+DUK_EXTERNAL duk_c_function duk_opt_c_function(duk_context *ctx, duk_idx_t idx, duk_c_function def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_value;
+	}
+	return duk_require_c_function(ctx, idx);
+}
+
 DUK_EXTERNAL duk_c_function duk_require_c_function(duk_context *ctx, duk_idx_t idx) {
 	duk_hthread *thr = (duk_hthread *) ctx;
 	duk_c_function ret;
@@ -1764,6 +2006,30 @@ DUK_EXTERNAL duk_context *duk_require_context(duk_context *ctx, duk_idx_t idx) {
 	return (duk_context *) duk_require_hthread(ctx, idx);
 }
 
+#if 0
+DUK_EXTERNAL duk_context *duk_XXX_context(duk_context *ctx, duk_idx_t idx, duk_context *def_value) {
+	duk_context *ret;
+
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	ret = duk_get_context(ctx, idx);
+	if (ret != NULL) {
+		return ret;
+	}
+
+	return def_value;
+}
+#endif
+
+DUK_EXTERNAL duk_context *duk_opt_context(duk_context *ctx, duk_idx_t idx, duk_context *def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_value;
+	}
+	return duk_require_context(ctx, idx);
+}
+
 DUK_EXTERNAL void *duk_get_heapptr(duk_context *ctx, duk_idx_t idx) {
 	duk_tval *tv;
 	void *ret;
@@ -1779,6 +2045,30 @@ DUK_EXTERNAL void *duk_get_heapptr(duk_context *ctx, duk_idx_t idx) {
 	ret = (void *) DUK_TVAL_GET_HEAPHDR(tv);
 	DUK_ASSERT(ret != NULL);
 	return ret;
+}
+
+#if 0
+DUK_EXTERNAL void *duk_opt_heapptr(duk_context *ctx, duk_idx_t idx, void *def_value) {
+	void *ret;
+
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	ret = duk_get_heapptr(ctx, idx);
+	if (ret != NULL) {
+		return ret;
+	}
+
+	return def_value;
+}
+#endif
+
+DUK_EXTERNAL void *duk_opt_heapptr(duk_context *ctx, duk_idx_t idx, void *def_value) {
+	DUK_ASSERT_CTX_VALID(ctx);
+
+	if (duk_check_type_mask(ctx, idx, DUK_TYPE_MASK_NONE | DUK_TYPE_MASK_UNDEFINED)) {
+		return def_value;
+	}
+	return duk_require_heapptr(ctx, idx);
 }
 
 DUK_EXTERNAL void *duk_require_heapptr(duk_context *ctx, duk_idx_t idx) {
@@ -2248,7 +2538,7 @@ DUK_EXTERNAL duk_int_t duk_to_int(duk_context *ctx, duk_idx_t idx) {
 	 */
 	DUK_ASSERT_CTX_VALID(ctx);
 	(void) duk__to_int_uint_helper(ctx, idx, duk_js_tointeger);
-	return (duk_int_t) duk__api_coerce_d2i(ctx, idx, 0 /*require*/);
+	return (duk_int_t) duk__api_coerce_d2i(ctx, idx, 0 /*def_value*/, 0 /*require*/);
 }
 
 DUK_EXTERNAL duk_uint_t duk_to_uint(duk_context *ctx, duk_idx_t idx) {
@@ -2257,7 +2547,7 @@ DUK_EXTERNAL duk_uint_t duk_to_uint(duk_context *ctx, duk_idx_t idx) {
 	 */
 	DUK_ASSERT_CTX_VALID(ctx);
 	(void) duk__to_int_uint_helper(ctx, idx, duk_js_tointeger);
-	return (duk_uint_t) duk__api_coerce_d2ui(ctx, idx, 0 /*require*/);
+	return (duk_uint_t) duk__api_coerce_d2ui(ctx, idx, 0 /*def_value*/, 0 /*require*/);
 }
 
 DUK_EXTERNAL duk_int32_t duk_to_int32(duk_context *ctx, duk_idx_t idx) {
@@ -5266,7 +5556,7 @@ DUK_EXTERNAL duk_bool_t duk_strict_equals(duk_context *ctx, duk_idx_t idx1, duk_
 	return duk_js_strict_equals(tv1, tv2);
 }
 
-DUK_EXTERNAL_DECL duk_bool_t duk_samevalue(duk_context *ctx, duk_idx_t idx1, duk_idx_t idx2) {
+DUK_EXTERNAL duk_bool_t duk_samevalue(duk_context *ctx, duk_idx_t idx1, duk_idx_t idx2) {
 	duk_tval *tv1, *tv2;
 
 	DUK_ASSERT_CTX_VALID(ctx);
