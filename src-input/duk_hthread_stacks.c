@@ -1,5 +1,5 @@
 /*
- *  Manipulation of thread stacks (valstack, callstack, catchstack).
+ *  Manipulation of thread stacks (valstack, callstack).
  *
  *  Ideally unwinding of stacks should have no side effects, which would
  *  then favor separate unwinding and shrink check primitives for each
@@ -13,9 +13,8 @@
  *  unwind primitive which handles all stacks as requested, and knows
  *  the proper order for unwinding.)
  *
- *  Valstack entries above 'top' are always kept initialized to
- *  "undefined unused".  Callstack and catchstack entries above 'top'
- *  are not zeroed and are left as garbage.
+ *  Valstack entries above 'top' are always kept initialized to "undefined".
+ *  Callstack entries above 'top' are not zeroed and are left as garbage.
  *
  *  Value stack handling is mostly a part of the API implementation.
  */
@@ -161,6 +160,7 @@ DUK_INTERNAL void duk_hthread_callstack_unwind_norz(duk_hthread *thr, duk_size_t
 #if defined(DUK_USE_DEBUGGER_SUPPORT)
 		duk_heap *heap;
 #endif
+		duk_catcher *cat;
 
 		idx--;
 		DUK_ASSERT_DISABLE(idx >= 0);  /* unsigned */
@@ -232,6 +232,44 @@ DUK_INTERNAL void duk_hthread_callstack_unwind_norz(duk_hthread *thr, duk_size_t
 			}
 		}
 #endif
+
+		/*
+		 *  Unwind catchers.
+		 *
+		 *  Since there are no references in the catcher structure,
+		 *  unwinding is quite simple.  The only thing we need to
+		 *  look out for is popping a possible lexical environment
+		 *  established for an active catch clause.
+		 */
+
+		act = thr->callstack + idx;  /* avoid side effects -- FIXME: should be unnecessary */
+		for (cat = act->cat; cat != NULL;) {
+			duk_catcher *cat_next;
+
+			/* FIXME: this needs to happen in executor too */
+			if (DUK_CAT_HAS_LEXENV_ACTIVE(cat)) {
+				duk_hobject *env;
+
+				DUK_DDD(DUK_DDDPRINT("unwinding catch stack entry %p", (void *) cat));
+
+				act = thr->callstack + idx;  /* avoid side effects -- FIXME: should be unnecessary */
+				env = act->lex_env;             /* current lex_env of the activation (created for catcher) */
+				DUK_ASSERT(env != NULL);        /* must be, since env was created when catcher was created */
+				act->lex_env = DUK_HOBJECT_GET_PROTOTYPE(thr->heap, env);  /* prototype is lex_env before catcher created */
+				DUK_HOBJECT_INCREF(thr, act->lex_env);
+				DUK_HOBJECT_DECREF_NORZ(thr, env);
+
+				/* There is no need to decref anything else than 'env': if 'env'
+				 * becomes unreachable, refzero will handle decref'ing its prototype.
+				 */
+			}
+
+			cat_next = cat->parent;
+			DUK_FREE(thr->heap, (void *) cat);
+			cat = cat_next;
+			act = thr->callstack + idx;  /* avoid side effects -- FIXME: should be unnecessary */
+			act->cat = cat;  /* FIXME... "unwind" this too, or just comment not necessary? */
+		}
 
 		/*
 		 *  Close environment record(s) if they exist.
@@ -322,175 +360,6 @@ DUK_INTERNAL void duk_hthread_callstack_unwind(duk_hthread *thr, duk_size_t new_
 	DUK_REFZERO_CHECK_FAST(thr);
 }
 
-DUK_LOCAL DUK_COLD DUK_NOINLINE void duk__hthread_do_catchstack_grow(duk_hthread *thr) {
-	duk_catcher *new_ptr;
-	duk_size_t old_size;
-	duk_size_t new_size;
-
-	DUK_ASSERT(thr != NULL);
-	DUK_ASSERT_DISABLE(thr->catchstack_top);  /* avoid warning (unsigned) */
-	DUK_ASSERT(thr->catchstack_size >= thr->catchstack_top);
-
-	old_size = thr->catchstack_size;
-	new_size = old_size + DUK_CATCHSTACK_GROW_STEP;
-
-	/* this is a bit approximate (errors out before max is reached); this is OK */
-	if (new_size >= thr->catchstack_max) {
-		DUK_ERROR_RANGE(thr, DUK_STR_CATCHSTACK_LIMIT);
-	}
-
-	DUK_DD(DUK_DDPRINT("growing catchstack %ld -> %ld", (long) old_size, (long) new_size));
-
-	/*
-	 *  Note: must use indirect variant of DUK_REALLOC() because underlying
-	 *  pointer may be changed by mark-and-sweep.
-	 */
-
-	DUK_ASSERT(new_size > 0);
-	new_ptr = (duk_catcher *) DUK_REALLOC_INDIRECT(thr->heap, duk_hthread_get_catchstack_ptr, (void *) thr, sizeof(duk_catcher) * new_size);
-	if (!new_ptr) {
-		/* No need for a NULL/zero-size check because new_size > 0) */
-		DUK_ERROR_ALLOC_FAILED(thr);
-	}
-	thr->catchstack = new_ptr;
-	thr->catchstack_size = new_size;
-
-	/* note: any entries above the catchstack top are garbage and not zeroed */
-}
-
-DUK_INTERNAL void duk_hthread_catchstack_grow(duk_hthread *thr) {
-	DUK_ASSERT(thr != NULL);
-	DUK_ASSERT_DISABLE(thr->catchstack_top);  /* avoid warning (unsigned) */
-	DUK_ASSERT(thr->catchstack_size >= thr->catchstack_top);
-
-	if (DUK_LIKELY(thr->catchstack_top < thr->catchstack_size)) {
-		return;
-	}
-
-	duk__hthread_do_catchstack_grow(thr);
-}
-
-DUK_LOCAL DUK_COLD DUK_NOINLINE void duk__hthread_do_catchstack_shrink(duk_hthread *thr) {
-	duk_size_t new_size;
-	duk_catcher *p;
-
-	DUK_ASSERT(thr != NULL);
-	DUK_ASSERT_DISABLE(thr->catchstack_top >= 0);  /* avoid warning (unsigned) */
-	DUK_ASSERT(thr->catchstack_size >= thr->catchstack_top);
-
-	new_size = thr->catchstack_top + DUK_CATCHSTACK_SHRINK_SPARE;
-	DUK_ASSERT(new_size >= thr->catchstack_top);
-
-	DUK_DD(DUK_DDPRINT("shrinking catchstack %ld -> %ld", (long) thr->catchstack_size, (long) new_size));
-
-	/*
-	 *  Note: must use indirect variant of DUK_REALLOC() because underlying
-	 *  pointer may be changed by mark-and-sweep.
-	 */
-
-	/* shrink failure is not fatal */
-	p = (duk_catcher *) DUK_REALLOC_INDIRECT(thr->heap, duk_hthread_get_catchstack_ptr, (void *) thr, sizeof(duk_catcher) * new_size);
-	if (p) {
-		thr->catchstack = p;
-		thr->catchstack_size = new_size;
-	} else {
-		/* Because new_size != 0, if condition doesn't need to be
-		 * (p != NULL || new_size == 0).
-		 */
-		DUK_ASSERT(new_size != 0);
-		DUK_D(DUK_DPRINT("catchstack shrink failed, ignoring"));
-	}
-
-	/* note: any entries above the catchstack top are garbage and not zeroed */
-}
-
-DUK_INTERNAL void duk_hthread_catchstack_shrink_check(duk_hthread *thr) {
-	DUK_ASSERT(thr != NULL);
-	DUK_ASSERT_DISABLE(thr->catchstack_top >= 0);  /* avoid warning (unsigned) */
-	DUK_ASSERT(thr->catchstack_size >= thr->catchstack_top);
-
-	if (DUK_LIKELY(thr->catchstack_size - thr->catchstack_top < DUK_CATCHSTACK_SHRINK_THRESHOLD)) {
-		return;
-	}
-
-	duk__hthread_do_catchstack_shrink(thr);
-}
-
-DUK_INTERNAL void duk_hthread_catchstack_unwind_norz(duk_hthread *thr, duk_size_t new_top) {
-	duk_size_t idx;
-
-	DUK_DDD(DUK_DDDPRINT("unwind catchstack top of thread %p from %ld to %ld",
-	                     (void *) thr,
-	                     (thr != NULL ? (long) thr->catchstack_top : (long) -1),
-	                     (long) new_top));
-
-	DUK_ASSERT(thr);
-	DUK_ASSERT(thr->heap);
-	DUK_ASSERT_DISABLE(new_top >= 0);  /* unsigned */
-	DUK_ASSERT((duk_size_t) new_top <= thr->catchstack_top);  /* cannot grow */
-
-	/*
-	 *  Since there are no references in the catcher structure,
-	 *  unwinding is quite simple.  The only thing we need to
-	 *  look out for is popping a possible lexical environment
-	 *  established for an active catch clause.
-	 */
-
-	idx = thr->catchstack_top;
-	while (idx > new_top) {
-		duk_catcher *p;
-		duk_activation *act;
-		duk_hobject *env;
-
-		idx--;
-		DUK_ASSERT_DISABLE(idx >= 0);  /* unsigned */
-		DUK_ASSERT((duk_size_t) idx < thr->catchstack_size);
-
-		p = thr->catchstack + idx;
-
-		if (DUK_CAT_HAS_LEXENV_ACTIVE(p)) {
-			DUK_DDD(DUK_DDDPRINT("unwinding catchstack idx %ld, callstack idx %ld, callstack top %ld: lexical environment active",
-			                     (long) idx, (long) p->callstack_index, (long) thr->callstack_top));
-
-			/* XXX: Here we have a nasty dependency: the need to manipulate
-			 * the callstack means that catchstack must always be unwound by
-			 * the caller before unwinding the callstack.  This should be fixed
-			 * later.
-			 */
-
-			/* Note that multiple catchstack entries may refer to the same
-			 * callstack entry.
-			 */
-			act = thr->callstack + p->callstack_index;
-			DUK_ASSERT(act >= thr->callstack);
-			DUK_ASSERT(act < thr->callstack + thr->callstack_top);
-
-			DUK_DDD(DUK_DDDPRINT("catchstack_index=%ld, callstack_index=%ld, lex_env=%!iO",
-			                     (long) idx, (long) p->callstack_index,
-			                     (duk_heaphdr *) act->lex_env));
-
-			env = act->lex_env;             /* current lex_env of the activation (created for catcher) */
-			DUK_ASSERT(env != NULL);        /* must be, since env was created when catcher was created */
-			act->lex_env = DUK_HOBJECT_GET_PROTOTYPE(thr->heap, env);  /* prototype is lex_env before catcher created */
-			DUK_HOBJECT_INCREF(thr, act->lex_env);
-			DUK_HOBJECT_DECREF_NORZ(thr, env);
-
-			/* There is no need to decref anything else than 'env': if 'env'
-			 * becomes unreachable, refzero will handle decref'ing its prototype.
-			 */
-		}
-	}
-
-	thr->catchstack_top = new_top;
-
-	/* note: any entries above the catchstack top are garbage and not zeroed */
-}
-
-DUK_INTERNAL void duk_hthread_catchstack_unwind(duk_hthread *thr, duk_size_t new_top) {
-	duk_hthread_catchstack_unwind_norz(thr, new_top);
-	DUK_REFZERO_CHECK_FAST(thr);
-}
-
 #if defined(DUK_USE_FINALIZER_TORTURE)
 DUK_INTERNAL void duk_hthread_valstack_torture_realloc(duk_hthread *thr) {
 	duk_size_t alloc_size;
@@ -551,31 +420,6 @@ DUK_INTERNAL void duk_hthread_callstack_torture_realloc(duk_hthread *thr) {
 		/* No change in size. */
 	} else {
 		DUK_D(DUK_DPRINT("failed to realloc callstack for torture, ignore"));
-	}
-}
-
-DUK_INTERNAL void duk_hthread_catchstack_torture_realloc(duk_hthread *thr) {
-	duk_size_t alloc_size;
-	duk_catcher *new_ptr;
-
-	if (thr->catchstack == NULL) {
-		return;
-	}
-
-	alloc_size = sizeof(duk_catcher) * thr->catchstack_size;
-	if (alloc_size == 0) {
-		return;
-	}
-
-	new_ptr = (duk_catcher *) DUK_ALLOC(thr->heap, alloc_size);
-	if (new_ptr != NULL) {
-		DUK_MEMCPY((void *) new_ptr, (const void *) thr->catchstack, alloc_size);
-		DUK_MEMSET((void *) thr->catchstack, 0x55, alloc_size);
-		DUK_FREE(thr->heap, (void *) thr->catchstack);
-		thr->catchstack = new_ptr;
-		/* No change in size. */
-	} else {
-		DUK_D(DUK_DPRINT("failed to realloc catchstack for torture, ignore"));
 	}
 }
 #endif  /* DUK_USE_FINALIZER_TORTURE */

@@ -218,6 +218,7 @@ typedef void *(*duk_mem_getptr)(duk_heap *heap, void *ud);
 
 #define DUK_ALLOC_CHECKED(thr,size)                     duk_heap_mem_alloc_checked((thr), (size))
 #define DUK_ALLOC_CHECKED_ZEROED(thr,size)              duk_heap_mem_alloc_checked_zeroed((thr), (size))
+/* FIXME: DUK_FREE_CHECKED(thr) --> allow 'thr' argument */
 
 /*
  *  Memory constants
