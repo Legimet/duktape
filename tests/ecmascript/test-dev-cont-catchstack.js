@@ -1,5 +1,9 @@
 /*
  *  Test that we can continue after a catchstack limit error.
+ *
+ *  Since Duktape 2.1.0 there isn't an explicit catch stack limit: catchers
+ *  are allocated normally and an out-of-memory may occur when trying to
+ *  allocate a catcher.  This test now fails with callstack limit.
  */
 
 /*---
@@ -9,7 +13,7 @@
 ---*/
 
 /*===
-RangeError: catchstack limit
+RangeError: callstack limit
 true
 still here
 ===*/
