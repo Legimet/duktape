@@ -153,17 +153,13 @@ DUK_INTERNAL void duk_heap_process_finalize_list(duk_heap *heap) {
 	DUK_ASSERT(heap->pf_prevent_count == 0);
 	heap->pf_prevent_count = 1;
 
-	/* Bump ms_prevent_count to prevent mark-and-sweep while we execute
-	 * finalizers.  It's important for no mark-and-sweep passes to happen
-	 * while we process the finalize_list.  If a part of the finalize_list
-	 * has been processed and mark-and-sweep runs, it will incorrectly
-	 * consider the processed objects rescued if they are in a reference
-	 * relationship with objects still in finalize_list.  This happens
-	 * because mark-and-sweep treats the whole finalize_list as being
-	 * "reachable".
+	/* Mark-and-sweep no longer needs to be prevented when running
+	 * finalizers: mark-and-sweep skips any rescue/free decisions
+	 * if there are any objects in finalize_list when mark-and-sweep
+	 * is entered.  This protects finalized objects from incorrect
+	 * rescue decisions caused by finalize_list being a reachability
+	 * root and only partially processed.
 	 */
-	heap->ms_prevent_count++;
-	DUK_ASSERT(heap->ms_prevent_count != 0);  /* Wrap. */
 
 	/* When finalizer torture is enabled, make a fake finalizer call with
 	 * maximum side effects regardless of whether finalize_list is empty.
@@ -191,6 +187,9 @@ DUK_INTERNAL void duk_heap_process_finalize_list(duk_heap *heap) {
 
 		/* Clear FINALIZABLE for object being finalized, so that
 		 * duk_push_heapptr() can properly ignore the object.
+		 */
+		/* FIXME: this breaks mark-and-sweep assertions; updated
+		 * assert: FINALIZABLE || curr == heap->current_finalizer_object
 		 */
 		DUK_HEAPHDR_CLEAR_FINALIZABLE(curr);
 
@@ -308,9 +307,6 @@ DUK_INTERNAL void duk_heap_process_finalize_list(duk_heap *heap) {
 	 */
 	DUK_REFZERO_CHECK_SLOW(heap->heap_thread);
 #endif
-
-	DUK_ASSERT(heap->ms_prevent_count > 0);
-	heap->ms_prevent_count--;
 
 	/* Prevent count may be bumped while finalizers run, but should always
 	 * be reliably unbumped by the time we get here.
